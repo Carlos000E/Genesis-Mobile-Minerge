@@ -16,7 +16,8 @@
             0%, 100% { box-shadow: 0 0 0 0 rgba(76, 175, 80, 0.7); }
             70% { box-shadow: 0 0 0 10px rgba(76, 175, 80, 0); }
         }
-        .error-box { background-color: #fee2e2; border: 1px solid #dc2626; color: #dc2626; padding: 10px; border-radius: 8px; margin-top: 10px; }
+        /* Corrigido para mostrar o erro em vermelho vivo */
+        .error-box { background-color: #fee2e2; border: 1px solid #dc2626; color: #dc2626; padding: 10px; border-radius: 8px; margin-top: 10px; font-weight: bold; }
     </style>
 </head>
 <body class="p-4 md:p-8">
@@ -78,6 +79,7 @@
 
         // --- VARIÁVEIS GLOBAIS FIREBASE (MANDATÓRIO) ---
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        // Usamos um objeto vazio como fallback seguro
         const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
         const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
         
@@ -91,7 +93,7 @@
         let miningInterval = null; 
         
         const COLLECTION_PATH = `artifacts/${appId}/public/data/blocks`;
-        const GENESIS_ID = '0'; // Documento ID para o bloco 0
+        const GENESIS_ID = '0'; // Documento ID para o bloco 0 - Deve ser uma string no Firestore
         
         const UI = {
             balanceDisplay: document.getElementById('balance-display'),
@@ -110,18 +112,14 @@
             try {
                 UI.miningStatus.textContent = '1. Inicializando Serviços...';
                 
-                if (Object.keys(firebaseConfig).length === 0) {
-                    throw new Error("Configuração do Firebase não fornecida.");
+                if (Object.keys(firebaseConfig).length === 0 || !firebaseConfig.apiKey) {
+                    throw new Error("Configuração do Firebase ausente ou incompleta. Falha de ambiente.");
                 }
                 
                 // Initialize Firebase
                 app = initializeApp(firebaseConfig);
                 auth = getAuth(app);
                 db = getFirestore(app);
-
-                // Enable Firestore logging for better debugging
-                // import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-                // setLogLevel('Debug'); // Uncomment this line if you need deep logs
 
                 // 1. Autenticação 
                 UI.miningStatus.textContent = '2. Autenticando Usuário...';
@@ -139,12 +137,13 @@
                     isAuthReady = true;
                     console.log("Firebase e Autenticação prontos. User ID:", userId);
                     
-                    UI.miningStatus.textContent = '3. Conectado ao DB. Carregando Chain...';
+                    UI.miningStatus.textContent = '3. Conectado ao DB. Configurando Chain...';
                     
                     // 2. Inicialização do Gênese e Listener do DB
                     await setupGenesisBlockAndListener();
                     
-                    stopMining(); // Habilita o botão para iniciar
+                    // Se chegou até aqui, a carteira está pronta
+                    stopMining(); 
                     
                 } else {
                     throw new Error("Falha ao obter credenciais de usuário após o login.");
@@ -152,9 +151,10 @@
 
             } catch (error) {
                 console.error("Erro ao inicializar Firebase:", error);
-                UI.miningStatus.textContent = `❌ Erro Fatal: Falha no DB.`;
+                UI.miningStatus.textContent = `❌ Erro: ${error.message.substring(0, 50)}...`;
+                UI.miningToggleBtn.textContent = 'Falha Crítica';
                 UI.miningToggleBtn.disabled = true;
-                showError(`Falha na Inicialização: ${error.message}. Verifique as regras de segurança do DB e a sua conexão.`);
+                showError(`Falha na Inicialização (Etapa 1-2): ${error.message}`);
             }
         }
         
@@ -188,7 +188,6 @@
                 let targetMultiplier;
                 try {
                     const hashPart = prevHash.substring(0, 7);
-                    // Garante que o targetMultiplier seja sempre um valor significativo
                     targetMultiplier = parseInt(hashPart, 16) % 9999999 + 1000000; 
                 } catch (e) {
                     targetMultiplier = 7654321; 
@@ -225,9 +224,11 @@
                         resolve({ kSecreta, tentativas });
                     } else if (endK < maxK) {
                         UI.miningProgress.textContent = `Tentativas: ${tentativas.toLocaleString()}`;
+                        // Continuar a busca no próximo tick do evento loop
                         setTimeout(runSearch, 0); 
                     } else {
-                        resolve(null);
+                        // Se atingir o limite, resetar e tentar de novo, ou parar
+                        resolve(null); 
                     }
                 }
                 
@@ -262,8 +263,7 @@
             const novoBlocoDados = {
                 ID_BLOCO: novoId,
                 NOME_MOEDA: 'GEN',
-                // Usando serverTimestamp() para garantir que a data de criação seja consistente
-                DATA_CRIACAO: new Date().toISOString(), // Mantém este campo para compatibilidade
+                DATA_CRIACAO: new Date().toISOString(),
                 RECOMPENSA_MINERACAO: recompensa.toFixed(1),
                 N_DIFF: nDiff,
                 HASH_ANTERIOR: prevHash,
@@ -271,7 +271,7 @@
                 PROVA_K_SECRETA: kSecreta,
                 MINERADOR_ID: userId,
                 tentativas: tentativas,
-                timestamp: serverTimestamp() // Importante para ordenação!
+                timestamp: serverTimestamp() 
             };
 
             const hashFinal = hashBlock(novoBlocoDados);
@@ -357,7 +357,6 @@
                 UI.blockList.innerHTML = '<p class="text-sm text-gray-500">Nenhum bloco encontrado na Blockchain.</p>';
             }
 
-            // Inverte a lista para que o bloco mais novo (maior ID) fique no topo da UI
             blocks.reverse().forEach(block => {
                 const isGenesis = block.ID_BLOCO === 0;
                 const isMine = block.MINERADOR_ID === userId;
@@ -365,7 +364,6 @@
                 
                 let dataCriacao = 'N/A';
                 try {
-                     // Prioriza o campo timestamp do Firestore se estiver disponível
                      const date = block.timestamp && block.timestamp.toDate ? block.timestamp.toDate() : new Date(block.DATA_CRIACAO);
                      dataCriacao = date.toLocaleTimeString('pt-BR');
                 } catch {}
@@ -390,81 +388,89 @@
 
         async function setupGenesisBlockAndListener() {
             // 1. Verificar Gênese
+            // Usando GENESIS_ID como string ('0')
             const genesisRef = doc(db, COLLECTION_PATH, GENESIS_ID);
-            const genesisSnap = await getDoc(genesisRef);
-
-            // Cria o Bloco Gênese se não existir
-            if (!genesisSnap.exists()) {
-                console.log("Bloco Gênese não encontrado. Inicializando...");
-                const genesisBlock = {
-                    ID_BLOCO: 0,
-                    NOME_MOEDA: 'GEN',
-                    DATA_CRIACAO: new Date().toISOString(),
-                    RECOMPENSA_MINERACAO: '0.0', 
-                    N_DIFF: 10000,
-                    HASH_ANTERIOR: '000000000000', 
-                    TRANSACOES: 'Genesis Block - Genesis Mobile Coin Chain Initialization',
-                    PROVA_K_SECRETA: 0, 
-                    MINERADOR_ID: 'SYSTEM',
-                    timestamp: serverTimestamp(), // Adicionado timestamp
-                    HASH_BLOCO_ATUAL: '000000000000' // Placeholder antes do hash real
-                };
-                
-                genesisBlock.HASH_BLOCO_ATUAL = hashBlock(genesisBlock);
-                await setDoc(genesisRef, genesisBlock);
-            }
-
-            // 2. Configurar Listener de Blocos (Em tempo real)
-            // CRÍTICO: Ordenar por 'timestamp' para garantir que os listeners do Firestore funcionem.
-            const q = query(collection(db, COLLECTION_PATH), orderBy("timestamp", "desc"), limit(100)); 
             
-            onSnapshot(q, (snapshot) => {
-                let tempBalance = 0.0;
-                let latestBlockId = -1;
-                let blocks = [];
-                let latestBlockData = null;
+            try {
+                const genesisSnap = await getDoc(genesisRef);
 
-                snapshot.docs.forEach(d => {
-                    const data = d.data();
-                    const idBloco = data.ID_BLOCO;
+                // Cria o Bloco Gênese se não existir
+                if (!genesisSnap.exists()) {
+                    console.log("Bloco Gênese não encontrado. Inicializando...");
+                    const genesisBlock = {
+                        ID_BLOCO: 0,
+                        NOME_MOEDA: 'GEN',
+                        DATA_CRIACAO: new Date().toISOString(),
+                        RECOMPENSA_MINERACAO: '0.0', 
+                        N_DIFF: 10000,
+                        HASH_ANTERIOR: '000000000000', 
+                        TRANSACOES: 'Genesis Block - Genesis Mobile Coin Chain Initialization',
+                        PROVA_K_SECRETA: 0, 
+                        MINERADOR_ID: 'SYSTEM',
+                        timestamp: serverTimestamp(), 
+                        HASH_BLOCO_ATUAL: '000000000000' 
+                    };
                     
-                    // Encontrar o bloco com o maior ID (o mais recente)
-                    if (idBloco > latestBlockId) {
-                        latestBlockId = idBloco;
-                        latestBlockData = data;
+                    genesisBlock.HASH_BLOCO_ATUAL = hashBlock(genesisBlock);
+                    await setDoc(genesisRef, genesisBlock);
+                }
+
+                // 2. Configurar Listener de Blocos (Em tempo real)
+                // Ordenar por 'timestamp'
+                const q = query(collection(db, COLLECTION_PATH), orderBy("timestamp", "desc"), limit(100)); 
+                
+                onSnapshot(q, (snapshot) => {
+                    let tempBalance = 0.0;
+                    let latestBlockId = -1;
+                    let blocks = [];
+                    let latestBlockData = null;
+
+                    snapshot.docs.forEach(d => {
+                        const data = d.data();
+                        const idBloco = data.ID_BLOCO;
+                        
+                        if (idBloco > latestBlockId) {
+                            latestBlockId = idBloco;
+                            latestBlockData = data;
+                        }
+
+                        if (data.MINERADOR_ID === userId) {
+                            tempBalance += parseFloat(data.RECOMPENSA_MINERACAO || 0.0);
+                        }
+                        
+                        blocks.push(data);
+                    });
+                    
+                    if (latestBlockId === -1 && blocks.length > 0) {
+                        latestBlockId = blocks[0].ID_BLOCO;
+                        latestBlockData = blocks[0];
+                    }
+                    
+                    latestBlock = latestBlockData;
+                    currentBalance = tempBalance;
+                    
+                    UI.latestBlockId.textContent = latestBlockId;
+                    updateBalanceUI();
+                    renderBlockList(blocks);
+                    
+                    if (!isMining) {
+                        stopMining(); 
+                    }
+                    
+                    UI.miningStatus.textContent = latestBlockId >= 0 ? "Pronto para Minerarrr! ⛏️" : "Aguardando Bloco Gênese...";
+                    // Limpa a lista de blocos se ainda estiver mostrando a mensagem de carregamento.
+                    if(latestBlockId >= 0) {
+                         UI.blockList.querySelector('p').remove();
                     }
 
-                    // Calcular saldo
-                    if (data.MINERADOR_ID === userId) {
-                        tempBalance += parseFloat(data.RECOMPENSA_MINERACAO || 0.0);
-                    }
-                    
-                    blocks.push(data);
+                }, (error) => {
+                    console.error("Erro no listener do Firestore:", error);
+                    showError("Erro de Conexão DB (Listener): Verifique o console. Pode ser falta de permissão ou índice ausente.");
                 });
-                
-                // Trata o caso de o único bloco ser o Gênese
-                if (latestBlockId === -1 && blocks.length > 0) {
-                     latestBlockId = blocks[0].ID_BLOCO;
-                     latestBlockData = blocks[0];
-                }
-                
-                latestBlock = latestBlockData;
-                currentBalance = tempBalance;
-                
-                UI.latestBlockId.textContent = latestBlockId;
-                updateBalanceUI();
-                renderBlockList(blocks);
-                
-                if (!isMining) {
-                    stopMining(); 
-                }
-                
-                UI.miningStatus.textContent = latestBlockId >= 0 ? "Pronto para Minerarrr! ⛏️" : "Aguardando Bloco Gênese...";
-
-            }, (error) => {
-                console.error("Erro no listener do Firestore:", error);
-                showError("Erro de Conexão DB (Listener): Não foi possível carregar a Blockchain. Verifique o console para mais detalhes.");
-            });
+            } catch (error) {
+                 console.error("Erro na fase de Gênese/Listener:", error);
+                 showError(`Falha na Configuração da Chain (Etapa 3): ${error.message}.`);
+            }
         }
 
         // --- INÍCIO ---
