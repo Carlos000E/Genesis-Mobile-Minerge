@@ -31,17 +31,17 @@
             <div id="balance-display" class="balance-display text-5xl font-extrabold text-center py-4 rounded-lg bg-gray-50 text-red-600">
                 0.0 GEN
             </div>
-            <p class="text-sm text-gray-500 text-center mt-2">ID do Minerador: <span id="user-id" class="font-mono text-xs">...</span></p>
+            <p class="text-sm text-gray-500 text-center mt-2">ID do Minerador: <span id="user-id" class="font-mono text-xs text-gray-400">...</span></p>
             <p class="text-sm text-gray-500 text-center mt-1">Último Bloco da Rede: <span id="latest-block-id" class="font-semibold">0</span></p>
         </div>
 
         <!-- SEÇÃO DE MINERAÇÃO -->
         <div class="card p-6 mb-6">
             <h2 class="text-lg font-semibold text-gray-700 mb-3">Mineração PoQ</h2>
-            <p id="mining-status" class="text-center font-medium mb-4 text-yellow-600">Aguardando inicialização da carteira...</p>
+            <p id="mining-status" class="text-center font-medium mb-4 text-yellow-600">Conectando ao Firebase...</p>
             <button id="mining-toggle-btn" onclick="toggleMining()" disabled
                 class="w-full py-3 text-white font-bold rounded-xl transition duration-300 bg-gray-400 hover:bg-gray-500">
-                Carregando...
+                Aguarde a Conexão
             </button>
             <div id="mining-progress" class="text-sm text-gray-500 mt-3 text-center">Tentativas: 0</div>
             <div id="error-message" class="error-box hidden"></div>
@@ -51,7 +51,7 @@
         <div class="card p-6">
             <h2 class="text-lg font-semibold text-gray-700 mb-3">Blocos da Blockchain</h2>
             <div id="block-list" class="space-y-2 max-h-40 overflow-y-scroll">
-                <p class="text-sm text-gray-500">Aguardando conexão com o banco de dados...</p>
+                <p class="text-sm text-gray-500">Carregando blocos...</p>
             </div>
         </div>
     </div>
@@ -59,7 +59,8 @@
     <!-- Firebase SDKs -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        // REMOVEMOS onAuthStateChanged e usamos signInWithCustomToken diretamente
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { 
             getFirestore, 
             collection, 
@@ -67,19 +68,15 @@
             orderBy, 
             limit, 
             onSnapshot, 
-            addDoc, 
             doc, 
-            getDocs,
             getDoc,
             setDoc,
             serverTimestamp
         } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         
-        // Importando Crypto-JS para a função de hashing SHA-256
         import * as crypto from 'https://unpkg.com/crypto-js@4.1.1/index.js';
 
         // --- VARIÁVEIS GLOBAIS FIREBASE (MANDATÓRIO) ---
-        // Estas variáveis são injetadas no ambiente Canvas e configuram o Firebase
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
         const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
         const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
@@ -89,12 +86,10 @@
 
         // --- ESTADO GLOBAL DA MINERAÇÃO ---
         let isMining = false;
-        let miningAttempt = 0;
         let latestBlock = null; 
         let currentBalance = 0.0;
-        let miningInterval = null; // Para controlar o loop de mineração
+        let miningInterval = null; 
         
-        // Caminho onde os blocos serão salvos no Firestore (Public Data)
         const COLLECTION_PATH = `artifacts/${appId}/public/data/blocks`;
         const GENESIS_ID = '0';
         
@@ -113,47 +108,50 @@
 
         async function initializeFirebase() {
             try {
+                UI.miningStatus.textContent = '1. Inicializando Serviços...';
+                
                 if (Object.keys(firebaseConfig).length === 0) {
-                    // Isso pode ocorrer em um ambiente de teste local, mas não deve ocorrer no Canvas
-                    console.warn("Configuração do Firebase ausente. O DB não funcionará.");
-                    UI.miningStatus.textContent = 'Atenção: Configuração DB ausente.';
-                    return;
+                    throw new Error("Configuração do Firebase não fornecida.");
                 }
                 
                 app = initializeApp(firebaseConfig);
                 auth = getAuth(app);
                 db = getFirestore(app);
 
-                // 1. Autenticação (Usando o token fornecido ou Anônima)
-                if (initialAuthToken) {
-                    await signInWithCustomToken(auth, initialAuthToken);
-                } else {
-                    await signInAnonymously(auth);
-                }
+                // 1. Autenticação (FORÇANDO A ESPERA com await)
+                UI.miningStatus.textContent = '2. Autenticando Usuário...';
+                let userCredential;
 
-                // Listener para garantir que a autenticação está pronta
-                onAuthStateChanged(auth, (user) => {
-                    if (user) {
-                        userId = user.uid;
-                        UI.userId.textContent = userId;
-                        isAuthReady = true;
-                        console.log("Firebase e Autenticação prontos. User ID:", userId);
-                        
-                        // 2. Inicialização do Gênese e Listener do DB
-                        setupGenesisBlockAndListener();
-                        
-                    } else {
-                        isAuthReady = false;
-                        UI.userId.textContent = 'Não Autenticado';
-                        UI.miningStatus.textContent = 'Erro de Autenticação.';
-                    }
-                });
+                if (initialAuthToken) {
+                    userCredential = await signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    userCredential = await signInAnonymously(auth);
+                }
+                
+                // PONTO CRÍTICO: Checagem após a autenticação
+                if (userCredential && userCredential.user) {
+                    userId = userCredential.user.uid;
+                    UI.userId.textContent = userId;
+                    isAuthReady = true;
+                    console.log("Firebase e Autenticação prontos. User ID:", userId);
+                    
+                    UI.miningStatus.textContent = '3. Conectado ao DB. Carregando Chain...';
+                    
+                    // 2. Inicialização do Gênese e Listener do DB
+                    await setupGenesisBlockAndListener();
+                    
+                    // Se chegou até aqui, a carteira está pronta
+                    stopMining(); // Habilita o botão para iniciar
+                    
+                } else {
+                    throw new Error("Falha ao obter credenciais de usuário após o login.");
+                }
 
             } catch (error) {
                 console.error("Erro ao inicializar Firebase:", error);
-                UI.miningStatus.textContent = `Erro Fatal: Falha no DB.`;
+                UI.miningStatus.textContent = `❌ Erro Fatal: Falha no DB.`;
                 UI.miningToggleBtn.disabled = true;
-                showError(`Falha na Inicialização do Firebase: ${error.message}. Verifique a sua conexão.`);
+                showError(`Falha na Inicialização: ${error.message}`);
             }
         }
         
@@ -162,19 +160,18 @@
             UI.errorMessage.classList.remove('hidden');
         }
 
-        // --- LÓGICA CORE DE BLOCKCHAIN (TRADUZIDA DO PYTHON) ---
+        // --- LÓGICA CORE DE BLOCKCHAIN (HASH & POQ) ---
 
         /**
          * Gera o hash SHA-256 do bloco.
          */
         function hashBlock(data) {
+            // ... (mesma função de hash)
             const kSecreta = data.PROVA_K_SECRETA || '';
             const nDiff = data.N_DIFF || '10000'; 
             
-            // Estrutura de string idêntica ao Python
             const dataStr = `${data.ID_BLOCO}-${data.NOME_MOEDA}-${data.DATA_CRIACAO}-${nDiff}-${data.HASH_ANTERIOR}-${data.TRANSACOES}-${kSecreta}`;
             
-            // Usa crypto-js para SHA-256
             const hash = crypto.SHA256(dataStr).toString(crypto.enc.Hex);
             
             return hash.substring(0, 12);
@@ -184,15 +181,15 @@
          * Executa o Proof-of-Quotient (PoQ) em um loop não-bloqueante.
          */
         function minePoQ(nDiff, prevHash) {
+            // ... (mesma função de mineração)
             return new Promise((resolve) => {
                 
                 let targetMultiplier;
                 try {
                     const hashPart = prevHash.substring(0, 7);
-                    // Garante que o targetMultiplier seja sempre um valor significativo
                     targetMultiplier = parseInt(hashPart, 16) % 9999999 + 1000000; 
                 } catch (e) {
-                    targetMultiplier = 7654321; // Valor base se o hash for inválido (como no bloco Gênese)
+                    targetMultiplier = 7654321; 
                 }
 
                 const minK = 1000;
@@ -201,16 +198,19 @@
                 let kSecreta = -1;
                 let tentativas = 0;
                 
-                // Função para rodar a mineração de forma não-bloqueante
                 function runSearch() {
-                    const batchSize = 500000; // Iterações por ciclo
+                    if (!isMining) {
+                         // Se a mineração for parada enquanto a busca está rodando
+                         resolve(null);
+                         return;
+                    }
+                    const batchSize = 500000; 
                     let startK = minK + tentativas;
                     let endK = Math.min(startK + batchSize, maxK);
 
                     for (let k = startK; k <= endK; k++) {
                         tentativas++;
                         
-                        // PoQ: (targetMultiplier * k) % nDiff === 0
                         const rAlvo = targetMultiplier * k;
                         const resto = rAlvo % nDiff;
                         
@@ -221,14 +221,11 @@
                     }
                     
                     if (kSecreta !== -1) {
-                        // Sucesso
                         resolve({ kSecreta, tentativas });
                     } else if (endK < maxK) {
-                        // Continua a busca no próximo ciclo de evento (não trava o navegador)
                         UI.miningProgress.textContent = `Tentativas: ${tentativas.toLocaleString()}`;
                         setTimeout(runSearch, 0); 
                     } else {
-                        // Falha ao encontrar um PoQ
                         resolve(null);
                     }
                 }
@@ -241,32 +238,25 @@
          * Cria um novo bloco e o salva no Firestore.
          */
         async function createAndSaveBlock(latest) {
-            if (!userId) {
-                console.error("Usuário não autenticado para salvar bloco.");
-                return;
-            }
-            if (!latest) {
-                console.error("Não há bloco anterior (latest block) para continuar a mineração.");
-                return;
-            }
+            if (!userId || !latest) return;
 
             const novoId = latest.ID_BLOCO + 1;
             const nDiff = latest.N_DIFF; 
             const prevHash = latest.HASH_BLOCO_ATUAL;
 
-            UI.miningStatus.textContent = "⚙️ Minerando o Bloco " + novoId + "...";
+            UI.miningStatus.textContent = `⚙️ Minerando o Bloco ${novoId} (Base: ${prevHash.substring(0, 4)}...)`;
             UI.miningToggleBtn.disabled = true;
 
             const resultadoMineracao = await minePoQ(nDiff, prevHash);
             
             if (!resultadoMineracao) {
-                UI.miningStatus.textContent = "❌ Mineração falhou ou limite de K atingido.";
+                UI.miningStatus.textContent = "❌ Mineração parada ou falhou (Tentativa de K esgotada).";
                 UI.miningToggleBtn.disabled = false;
                 return;
             }
 
             const { kSecreta, tentativas } = resultadoMineracao;
-            const recompensa = 5.0; // Recompensa fixa por bloco
+            const recompensa = 5.0; 
             
             const novoBlocoDados = {
                 ID_BLOCO: novoId,
@@ -282,18 +272,15 @@
                 timestamp: serverTimestamp() 
             };
 
-            // 1. Gerar o Hash final do bloco
             const hashFinal = hashBlock(novoBlocoDados);
             novoBlocoDados.HASH_BLOCO_ATUAL = hashFinal;
 
             try {
-                // 2. Salvar no Firestore
-                // O ID do documento é o ID_BLOCO para ordenação simples
+                // Tenta salvar no Firestore
                 await setDoc(doc(db, COLLECTION_PATH, String(novoId)), novoBlocoDados);
 
                 console.log(`✅ Bloco ${novoId} criado e salvo. Hash: ${hashFinal}`);
-                UI.miningStatus.textContent = `✨ Bloco ${novoId} Minerado! Próxima rodada...`;
-                miningAttempt = 0; 
+                UI.miningStatus.textContent = `✨ Bloco ${novoId} Minerado! Próxima rodada em 1s...`;
                 UI.miningProgress.textContent = `Tentativas: 0`;
 
             } catch (e) {
@@ -309,14 +296,13 @@
          * Loop que controla a mineração contínua.
          */
         async function miningLoop() {
-            if (!isMining || !latestBlock) {
+            if (!isMining || !latestBlock || latestBlock.ID_BLOCO < 0) {
+                // Garante que o loop pare se a flag for desativada ou se o DB ainda não carregou o Gênese
+                stopMining();
                 return;
             }
-
-            // Garante que a mineração só comece se houver um latestBlock válido
-            if (latestBlock.ID_BLOCO >= 0) {
-                await createAndSaveBlock(latestBlock);
-            }
+            
+            await createAndSaveBlock(latestBlock);
             
             // Agenda a próxima rodada. Usamos 1 segundo para o próximo bloco.
             miningInterval = setTimeout(miningLoop, 1000); 
@@ -324,9 +310,6 @@
 
         // --- FUNÇÕES DE INTERFACE E CONTROLE ---
         
-        /**
-         * Lida com o clique do botão Iniciar/Parar.
-         */
         window.toggleMining = function() {
             if (!isAuthReady) {
                 showError("Aguarde a conexão com o Firebase ser estabelecida.");
@@ -345,20 +328,19 @@
             isMining = true;
             UI.miningToggleBtn.textContent = "🛑 PARAR MINERAÇÃO";
             UI.miningToggleBtn.classList.add('mining-btn-active', 'bg-red-500', 'hover:bg-red-600');
-            UI.miningToggleBtn.classList.remove('bg-green-600', 'hover:bg-green-700');
-            UI.miningStatus.textContent = "🟢 Mineração Ativa...";
+            UI.miningToggleBtn.classList.remove('bg-green-600', 'hover:bg-green-700', 'bg-gray-400', 'hover:bg-gray-500');
             
-            // Inicia o primeiro ciclo imediatamente
-            miningLoop();
+            miningLoop(); // Inicia o primeiro ciclo
         }
 
         function stopMining() {
             isMining = false;
             clearTimeout(miningInterval);
             UI.miningToggleBtn.textContent = "▶️ INICIAR MINERAÇÃO";
-            UI.miningToggleBtn.classList.remove('mining-btn-active', 'bg-red-500', 'hover:bg-red-600');
+            UI.miningToggleBtn.classList.remove('mining-btn-active', 'bg-red-500', 'hover:bg-red-600', 'bg-gray-400', 'hover:bg-gray-500');
             UI.miningToggleBtn.classList.add('bg-green-600', 'hover:bg-green-700');
             UI.miningStatus.textContent = "Pausado. Clique para recomeçar.";
+            UI.miningToggleBtn.disabled = false;
         }
         
         function updateBalanceUI() {
@@ -374,15 +356,17 @@
                 UI.blockList.innerHTML = '<p class="text-sm text-gray-500">Nenhum bloco encontrado na Blockchain.</p>';
             }
 
-            blocks.forEach(block => {
+            // Exibe a lista de blocos (revertida para mostrar o mais novo no topo da lista scrollable)
+            blocks.reverse().forEach(block => {
                 const isGenesis = block.ID_BLOCO === 0;
                 const isMine = block.MINERADOR_ID === userId;
                 const statusColor = isMine ? 'text-blue-600' : 'text-gray-500';
                 
-                // Formatação da data
                 let dataCriacao = 'N/A';
                 try {
-                     dataCriacao = new Date(block.DATA_CRIACAO).toLocaleTimeString('pt-BR');
+                     // Converte o timestamp do Firestore ou a string ISO
+                     const date = block.timestamp && block.timestamp.toDate ? block.timestamp.toDate() : new Date(block.DATA_CRIACAO);
+                     dataCriacao = date.toLocaleTimeString('pt-BR');
                 } catch {}
 
                 UI.blockList.innerHTML += `
@@ -393,7 +377,7 @@
                         <p class="text-xs text-gray-600 mt-1">
                             Recompensa: <span class="font-bold text-green-700">${block.RECOMPENSA_MINERACAO || '0.0'} GEN</span>
                             <span class="${statusColor}">(${isMine ? 'Seu Bloco' : 'Outro Minerador'})</span>
-                            <br>Hash: <span class="font-mono text-xs">${block.HASH_BLOCO_ATUAL || '...'}${isGenesis ? ' (Gênese)' : ''}</span>
+                            <br>Hash: <span class="font-mono text-xs">${block.HASH_BLOCO_ATUAL || '...'}</span>
                         </p>
                     </div>
                 `;
@@ -403,9 +387,6 @@
 
         // --- CONFIGURAÇÃO DA BLOCKCHAIN E LISTENER DE SALDO ---
 
-        /**
-         * Garante que o Bloco Gênese exista e configura o listener em tempo real.
-         */
         async function setupGenesisBlockAndListener() {
             // 1. Verificar Gênese
             const genesisRef = doc(db, COLLECTION_PATH, GENESIS_ID);
@@ -417,7 +398,7 @@
                     ID_BLOCO: 0,
                     NOME_MOEDA: 'GEN',
                     DATA_CRIACAO: new Date().toISOString(),
-                    RECOMPENSA_MINERACAO: '0.0', // Gênese não tem recompensa
+                    RECOMPENSA_MINERACAO: '0.0', 
                     N_DIFF: 10000,
                     HASH_ANTERIOR: '000000000000', 
                     TRANSACOES: 'Genesis Block - Genesis Mobile Coin Chain Initialization',
@@ -426,13 +407,11 @@
                     timestamp: serverTimestamp() 
                 };
                 
-                // Gerar Hash e salvar
                 genesisBlock.HASH_BLOCO_ATUAL = hashBlock(genesisBlock);
                 await setDoc(genesisRef, genesisBlock);
             }
 
             // 2. Configurar Listener de Blocos (Em tempo real)
-            // Ordena pelo ID_BLOCO e limita a 100 mais recentes
             const q = query(collection(db, COLLECTION_PATH), orderBy("ID_BLOCO", "desc"), limit(100)); 
             
             onSnapshot(q, (snapshot) => {
@@ -445,15 +424,12 @@
                     const data = d.data();
                     const idBloco = data.ID_BLOCO;
                     
-                    // Encontra o bloco mais recente
                     if (idBloco > latestBlockId) {
                         latestBlockId = idBloco;
                         latestBlockData = data;
                     }
 
-                    // Calcula o saldo (apenas blocos minerados por este usuário)
                     if (data.MINERADOR_ID === userId) {
-                        // Faz uma conversão segura para garantir que o saldo seja numérico
                         tempBalance += parseFloat(data.RECOMPENSA_MINERACAO || 0.0);
                     }
                     
@@ -468,12 +444,8 @@
                 updateBalanceUI();
                 renderBlockList(blocks);
                 
-                // Habilita o botão se a mineração não estiver rodando
                 if (!isMining) {
-                    UI.miningToggleBtn.disabled = false;
-                    UI.miningToggleBtn.classList.remove('bg-gray-400');
-                    UI.miningToggleBtn.classList.add('bg-green-600', 'hover:bg-green-700');
-                    UI.miningStatus.textContent = 'Pausado. Clique para recomeçar.';
+                    stopMining(); // Garante que o botão esteja no estado INICIAR
                 }
             }, (error) => {
                 console.error("Erro no listener do Firestore:", error);
@@ -487,3 +459,4 @@
     </script>
 </body>
 </html>
+
